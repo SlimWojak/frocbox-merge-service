@@ -28,6 +28,7 @@ app.use(cors(corsOptions));
 
 // CRITICAL: Handle /merge route BEFORE any body parsing middleware to bypass GraphQL interference
 app.post('/merge', (req, res) => {
+  console.log('[START] Merge route processing initiated');
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
     method: req.method,
@@ -90,6 +91,7 @@ app.post('/merge', (req, res) => {
     try {
       if (!audioFilePath) {
         console.error('❌ No recordedAudio file received');
+        console.log('[END] Merge route failed - no audio file');
         return res.status(400).json({ error: 'No recorded audio uploaded' });
       }
 
@@ -113,6 +115,7 @@ app.post('/merge', (req, res) => {
     
     if (!videoUrl) {
       console.error('❌ No videoUrl provided');
+      console.log('[END] Merge route failed - no video URL');
       return res.status(400).json({ error: 'Missing video URL' });
     }
 
@@ -130,6 +133,7 @@ app.post('/merge', (req, res) => {
       });
     } catch (downloadError) {
       console.error('📺 [VIDEO] ❌ Download failed:', downloadError.message);
+      console.log('[END] Merge route failed at video download stage');
       return res.status(500).json({ error: 'Failed to download video URL' });
     }
 
@@ -145,6 +149,7 @@ app.post('/merge', (req, res) => {
       console.log('📺 [VIDEO] ✅ Backing track saved - Path:', backingTrackPath, 'Size:', savedStats.size, 'bytes');
     } catch (saveError) {
       console.error('📺 [VIDEO] ❌ Failed to save backing track:', saveError.message);
+      console.log('[END] Merge route failed at video save stage');
       return res.status(500).json({ error: 'Failed to save backing track' });
     }
 
@@ -175,6 +180,7 @@ app.post('/merge', (req, res) => {
       console.error('🎬 [FFMPEG] ❌ Merge failed:', ffmpegError.message);
       if (ffmpegError.stdout) console.error('🎬 [FFMPEG] stdout:', ffmpegError.stdout);
       if (ffmpegError.stderr) console.error('🎬 [FFMPEG] stderr:', ffmpegError.stderr);
+      console.log('[END] Merge route failed at FFmpeg stage');
       return res.status(500).json({ error: 'FFmpeg processing failed', details: ffmpegError.message });
     }
 
@@ -182,6 +188,7 @@ app.post('/merge', (req, res) => {
     console.log('✅ [RESPONSE] Checking output file...');
     if (!fs.existsSync(outputPath)) {
       console.error('✅ [RESPONSE] ❌ Output file not created:', outputPath);
+      console.log('[END] Merge route failed - output file not created');
       return res.status(500).json({ error: 'Merge output file not created' });
     }
 
@@ -196,10 +203,16 @@ app.post('/merge', (req, res) => {
       // Return merged video as response
       console.log('✅ [RESPONSE] Setting headers and sending response...');
       res.setHeader('Content-Type', 'video/mp4');
-      res.send(videoData);
-      console.log('✅ [RESPONSE] 🎉 Response sent successfully - Total size:', videoData.length, 'bytes');
+      
+      // Force log flush with small delay before response
+      console.log('[END] Merge route completed successfully - About to send response');
+      setTimeout(() => {
+        res.send(videoData);
+        console.log('✅ [RESPONSE] 🎉 Response sent successfully - Total size:', videoData.length, 'bytes');
+      }, 100);
     } catch (readError) {
       console.error('✅ [RESPONSE] ❌ Failed to read output file:', readError.message);
+      console.log('[END] Merge route failed at response stage');
       return res.status(500).json({ error: 'Failed to read merged video', details: readError.message });
     }
 
@@ -219,6 +232,7 @@ app.post('/merge', (req, res) => {
 
     } catch (error) {
       console.error('❌ Error in merge endpoint:', error);
+      console.log('[END] Merge route failed with error:', error.message);
       res.status(500).json({ error: 'Internal server error', details: error.message });
     }
   });

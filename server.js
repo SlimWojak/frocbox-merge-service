@@ -26,9 +26,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// CRITICAL: Handle /video-merge route BEFORE any body parsing middleware to bypass GraphQL interference
-app.post('/video-merge', (req, res) => {
-  console.log('[🛬] POST /video-merge received');
+// CRITICAL: Handle /merge route BEFORE any body parsing middleware to bypass GraphQL interference
+app.post('/merge', (req, res) => {
+  console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
     method: req.method,
     url: req.url,

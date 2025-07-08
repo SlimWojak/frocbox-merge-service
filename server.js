@@ -43,7 +43,7 @@ app.post('/merge', (req, res) => {
 
   // Handle file uploads
   busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-    console.log('📁 File received via busboy:', {
+    console.log('🎙️ [UPLOAD] File received via busboy:', {
       fieldname,
       filename,
       encoding,
@@ -52,24 +52,30 @@ app.post('/merge', (req, res) => {
 
     if (fieldname === 'recordedAudio') {
       audioFilePath = `/tmp/audio-${Date.now()}.webm`;
-      console.log('💾 Saving audio file to:', audioFilePath);
+      console.log('🎙️ [UPLOAD] Saving audio file to:', audioFilePath);
       
       const writeStream = fs.createWriteStream(audioFilePath);
       file.pipe(writeStream);
       
       writeStream.on('close', () => {
-        console.log('✅ Audio file saved successfully');
+        const stats = fs.statSync(audioFilePath);
+        console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', stats.size, 'bytes');
       });
     } else {
-      console.log('⚠️  Unexpected file field:', fieldname);
+      console.log('⚠️  [UPLOAD] Unexpected file field:', fieldname);
       file.resume(); // Drain the file stream
     }
   });
 
   // Handle form fields
   busboy.on('field', (fieldname, value) => {
-    console.log('📝 Form field received:', fieldname, '=', value);
+    console.log('📝 [FORM] Field received:', fieldname, '=', value);
     formFields[fieldname] = value;
+    
+    // Special logging for videoUrl
+    if (fieldname === 'videoUrl') {
+      console.log('📺 [VIDEO] Full videoUrl received:', value);
+    }
   });
 
   // Handle completion
@@ -110,76 +116,105 @@ app.post('/merge', (req, res) => {
       return res.status(400).json({ error: 'Missing video URL' });
     }
 
-    console.log('🌐 Downloading backing track from:', videoUrl);
+    console.log('📺 [VIDEO] Starting download from:', videoUrl);
     
     // Download backing track
     let videoResponse;
     try {
+      console.log('📺 [VIDEO] Initiating fetch...');
       videoResponse = await fetch(videoUrl);
-      console.log('📥 Video download response:', videoResponse.status, videoResponse.statusText);
+      console.log('📺 [VIDEO] ✅ Fetch response - Status:', videoResponse.status, 'StatusText:', videoResponse.statusText);
+      console.log('📺 [VIDEO] Response headers:', {
+        'content-type': videoResponse.headers.get('content-type'),
+        'content-length': videoResponse.headers.get('content-length')
+      });
     } catch (downloadError) {
-      console.error('❌ Video download failed:', downloadError);
+      console.error('📺 [VIDEO] ❌ Download failed:', downloadError.message);
       return res.status(500).json({ error: 'Failed to download video URL' });
     }
 
     const backingTrackPath = `/tmp/backing-${Date.now()}.mp4`;
-    console.log('💾 Saving backing track to:', backingTrackPath);
+    console.log('📺 [VIDEO] Saving backing track to:', backingTrackPath);
     
     try {
+      console.log('📺 [VIDEO] Converting response to buffer...');
       const videoBuffer = await videoResponse.arrayBuffer();
+      console.log('📺 [VIDEO] Buffer size:', videoBuffer.byteLength, 'bytes');
       fs.writeFileSync(backingTrackPath, Buffer.from(videoBuffer));
-      console.log('✅ Backing track saved successfully');
+      const savedStats = fs.statSync(backingTrackPath);
+      console.log('📺 [VIDEO] ✅ Backing track saved - Path:', backingTrackPath, 'Size:', savedStats.size, 'bytes');
     } catch (saveError) {
-      console.error('❌ Failed to save backing track:', saveError);
+      console.error('📺 [VIDEO] ❌ Failed to save backing track:', saveError.message);
       return res.status(500).json({ error: 'Failed to save backing track' });
     }
 
     // FFmpeg merge command
     const outputPath = `/tmp/merged-${Date.now()}.mp4`;
-    console.log('🎬 Starting FFmpeg merge...');
-    console.log('🎵 Audio file:', file.path);
-    console.log('🎥 Video file:', backingTrackPath);
-    console.log('📽️  Output file:', outputPath);
+    console.log('🎬 [FFMPEG] Starting merge process...');
+    console.log('🎬 [FFMPEG] Input audio:', file.path);
+    console.log('🎬 [FFMPEG] Input video:', backingTrackPath);
+    console.log('🎬 [FFMPEG] Output path:', outputPath);
+    console.log('🎬 [FFMPEG] Voice gain:', voiceGain, 'Track gain:', trackGain);
     
     const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${file.path}" -i "${backingTrackPath}" \
       -filter_complex "[0:a]aresample=async=1:first_pts=0,compand=attacks=0:points=-90/-90|-70/-20|-20/-5|0/0|20/0:soft-knee=6,equalizer=f=1800:width_type=h:width=200:g=3,dynaudnorm,highpass=f=300,volume=${voiceGain},agate=threshold=-30dB:ratio=2:attack=5:release=100[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
       -map 1:v:0 -map "[a]" -c:v copy -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
       "${outputPath}"`;
 
-    console.log('⚙️  FFmpeg command:', ffmpegCmd);
+    console.log('🎬 [FFMPEG] Exact command:', ffmpegCmd);
+    console.log('🎬 [FFMPEG] ⏱️  Execution starting...');
 
     try {
-      await execAsync(ffmpegCmd);
-      console.log('✅ FFmpeg merge completed successfully');
+      const startTime = Date.now();
+      const result = await execAsync(ffmpegCmd);
+      const duration = Date.now() - startTime;
+      console.log('🎬 [FFMPEG] ✅ Merge completed successfully in', duration, 'ms');
+      if (result.stdout) console.log('🎬 [FFMPEG] stdout:', result.stdout);
+      if (result.stderr) console.log('🎬 [FFMPEG] stderr:', result.stderr);
     } catch (ffmpegError) {
-      console.error('❌ FFmpeg merge failed:', ffmpegError);
+      console.error('🎬 [FFMPEG] ❌ Merge failed:', ffmpegError.message);
+      if (ffmpegError.stdout) console.error('🎬 [FFMPEG] stdout:', ffmpegError.stdout);
+      if (ffmpegError.stderr) console.error('🎬 [FFMPEG] stderr:', ffmpegError.stderr);
       return res.status(500).json({ error: 'FFmpeg processing failed', details: ffmpegError.message });
     }
 
     // Check if output file exists
+    console.log('✅ [RESPONSE] Checking output file...');
     if (!fs.existsSync(outputPath)) {
-      console.error('❌ Output file not created:', outputPath);
+      console.error('✅ [RESPONSE] ❌ Output file not created:', outputPath);
       return res.status(500).json({ error: 'Merge output file not created' });
     }
 
-    console.log('📤 Reading merged video file...');
-    const videoData = fs.readFileSync(outputPath);
-    console.log('📊 Video data size:', videoData.length, 'bytes');
+    const outputStats = fs.statSync(outputPath);
+    console.log('✅ [RESPONSE] Output file exists - Size:', outputStats.size, 'bytes');
 
-    // Return merged video as response
-    res.setHeader('Content-Type', 'video/mp4');
-    res.send(videoData);
-    console.log('✅ Response sent successfully');
+    console.log('✅ [RESPONSE] Reading merged video file...');
+    try {
+      const videoData = fs.readFileSync(outputPath);
+      console.log('✅ [RESPONSE] Video data loaded - Size:', videoData.length, 'bytes');
+
+      // Return merged video as response
+      console.log('✅ [RESPONSE] Setting headers and sending response...');
+      res.setHeader('Content-Type', 'video/mp4');
+      res.send(videoData);
+      console.log('✅ [RESPONSE] 🎉 Response sent successfully - Total size:', videoData.length, 'bytes');
+    } catch (readError) {
+      console.error('✅ [RESPONSE] ❌ Failed to read output file:', readError.message);
+      return res.status(500).json({ error: 'Failed to read merged video', details: readError.message });
+    }
 
     // Cleanup
-    console.log('🧹 Cleaning up temporary files...');
+    console.log('🧹 [CLEANUP] Removing temporary files...');
     try {
+      console.log('🧹 [CLEANUP] Removing audio file:', file.path);
       fs.unlinkSync(file.path);
+      console.log('🧹 [CLEANUP] Removing video file:', backingTrackPath);
       fs.unlinkSync(backingTrackPath);
+      console.log('🧹 [CLEANUP] Removing output file:', outputPath);
       fs.unlinkSync(outputPath);
-      console.log('✅ Cleanup completed');
+      console.log('🧹 [CLEANUP] ✅ All temporary files removed');
     } catch (cleanupError) {
-      console.warn('⚠️  Cleanup failed:', cleanupError);
+      console.warn('🧹 [CLEANUP] ⚠️  Cleanup failed:', cleanupError.message);
     }
 
     } catch (error) {

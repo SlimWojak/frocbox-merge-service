@@ -25,13 +25,8 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
 
-// Add a simple health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
+// CRITICAL: Handle /merge route BEFORE any body parsing middleware to bypass GraphQL interference
 app.post('/merge', (req, res) => {
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
@@ -204,6 +199,14 @@ app.post('/merge', (req, res) => {
 
   // Pipe the request to busboy
   req.pipe(busboy);
+});
+
+// Apply JSON parsing to all other routes (after /merge to avoid interference)
+app.use(express.json());
+
+// Add a simple health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 app.listen(port, () => {

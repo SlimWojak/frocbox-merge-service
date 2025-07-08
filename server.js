@@ -33,7 +33,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
+app.post('/merge', upload.any(), async (req, res) => {
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
     method: req.method,
@@ -44,20 +44,24 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
 
   try {
     console.log('📦 req.body:', req.body);
-    console.log('📁 req.file:', req.file);
+    console.log('📁 req.files:', req.files);
     
-    // Check if multer parsed the file correctly
-    if (!req.file) {
-      console.error('❌ No file uploaded - multer failed to parse');
-      return res.status(400).json({ error: 'No audio file uploaded' });
+    // Find the recordedAudio file from the files array
+    const file = req.files?.find(f => f.fieldname === 'recordedAudio');
+    
+    if (!file) {
+      console.error('❌ No recordedAudio file uploaded - multer.any() failed to find it');
+      console.error('Available files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
+      return res.status(400).json({ error: 'No recorded audio uploaded' });
     }
     
-    console.log('✅ File parsed successfully:', {
-      filename: req.file.filename,
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      path: req.file.path
+    console.log('✅ File received:', {
+      fieldname: file.fieldname,
+      filename: file.filename,
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      path: file.path
     });
 
     const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = req.body;
@@ -100,11 +104,11 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
     // FFmpeg merge command
     const outputPath = `/tmp/merged-${Date.now()}.mp4`;
     console.log('🎬 Starting FFmpeg merge...');
-    console.log('🎵 Audio file:', req.file.path);
+    console.log('🎵 Audio file:', file.path);
     console.log('🎥 Video file:', backingTrackPath);
     console.log('📽️  Output file:', outputPath);
     
-    const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${req.file.path}" -i "${backingTrackPath}" \
+    const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${file.path}" -i "${backingTrackPath}" \
       -filter_complex "[0:a]aresample=async=1:first_pts=0,compand=attacks=0:points=-90/-90|-70/-20|-20/-5|0/0|20/0:soft-knee=6,equalizer=f=1800:width_type=h:width=200:g=3,dynaudnorm,highpass=f=300,volume=${voiceGain},agate=threshold=-30dB:ratio=2:attack=5:release=100[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
       -map 1:v:0 -map "[a]" -c:v copy -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
       "${outputPath}"`;
@@ -137,7 +141,7 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
     // Cleanup
     console.log('🧹 Cleaning up temporary files...');
     try {
-      fs.unlinkSync(req.file.path);
+      fs.unlinkSync(file.path);
       fs.unlinkSync(backingTrackPath);
       fs.unlinkSync(outputPath);
       console.log('✅ Cleanup completed');

@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const multer = require('multer');
 const { exec } = require('child_process');
 const { promisify } = require('util');
@@ -12,7 +13,25 @@ const upload = multer({ dest: '/tmp/' });
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Configure CORS to allow requests from your frontend domain
+const corsOptions = {
+  origin: [
+    'https://sing.frocofficial.com',
+    'http://localhost:3000', // for local development
+    'https://frocbox-mvp.vercel.app' // if you have a Vercel deployment
+  ],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Add a simple health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
 
 app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
   try {

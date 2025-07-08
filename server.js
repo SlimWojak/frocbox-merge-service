@@ -27,7 +27,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // CRITICAL: Handle /merge route BEFORE any body parsing middleware to bypass GraphQL interference
-app.post('/merge', (req, res) => {
+app.post('/merge', async (req, res) => {
   console.log('[START] Merge route processing initiated');
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
@@ -37,63 +37,110 @@ app.post('/merge', (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  const busboy = new Busboy({ headers: req.headers });
-  let audioFilePath = null;
-  let formFields = {};
-  let processingComplete = false;
+  // Wrap busboy processing in Promise to ensure proper async handling
+  const processBusboy = new Promise((resolve, reject) => {
+    const busboy = new Busboy({ headers: req.headers });
+    let audioFilePath = null;
+    let formFields = {};
+    let fileWritePromises = [];
 
-  // Handle file uploads
-  busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
-    console.log('🎙️ [UPLOAD] File received via busboy:', {
-      fieldname,
-      filename,
-      encoding,
-      mimetype
+    console.log('🔄 [BUSBOY] Initializing busboy processing...');
+
+    // Handle file uploads
+    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+      console.log('🎙️ [UPLOAD] 🔥 FILE EVENT FIRED - busboy.on("file") callback executing');
+      console.log('🎙️ [UPLOAD] File received via busboy:', {
+        fieldname,
+        filename,
+        encoding,
+        mimetype
+      });
+
+      if (fieldname === 'recordedAudio') {
+        audioFilePath = `/tmp/audio-${Date.now()}.webm`;
+        console.log('🎙️ [UPLOAD] Saving audio file to:', audioFilePath);
+        
+        // Create promise for file write completion
+        const fileWritePromise = new Promise((fileResolve, fileReject) => {
+          const writeStream = fs.createWriteStream(audioFilePath);
+          file.pipe(writeStream);
+          
+          writeStream.on('close', () => {
+            const stats = fs.statSync(audioFilePath);
+            console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', stats.size, 'bytes');
+            fileResolve();
+          });
+          
+          writeStream.on('error', (error) => {
+            console.error('🎙️ [UPLOAD] ❌ File write error:', error);
+            fileReject(error);
+          });
+        });
+        
+        fileWritePromises.push(fileWritePromise);
+      } else {
+        console.log('⚠️  [UPLOAD] Unexpected file field:', fieldname);
+        file.resume(); // Drain the file stream
+      }
     });
 
-    if (fieldname === 'recordedAudio') {
-      audioFilePath = `/tmp/audio-${Date.now()}.webm`;
-      console.log('🎙️ [UPLOAD] Saving audio file to:', audioFilePath);
+    // Handle form fields
+    busboy.on('field', (fieldname, value) => {
+      console.log('📝 [FORM] 🔥 FIELD EVENT FIRED - busboy.on("field") callback executing');
+      console.log('📝 [FORM] Field received:', fieldname, '=', value);
+      formFields[fieldname] = value;
       
-      const writeStream = fs.createWriteStream(audioFilePath);
-      file.pipe(writeStream);
-      
-      writeStream.on('close', () => {
-        const stats = fs.statSync(audioFilePath);
-        console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', stats.size, 'bytes');
-      });
-    } else {
-      console.log('⚠️  [UPLOAD] Unexpected file field:', fieldname);
-      file.resume(); // Drain the file stream
-    }
-  });
-
-  // Handle form fields
-  busboy.on('field', (fieldname, value) => {
-    console.log('📝 [FORM] Field received:', fieldname, '=', value);
-    formFields[fieldname] = value;
-    
-    // Special logging for videoUrl
-    if (fieldname === 'videoUrl') {
-      console.log('📺 [VIDEO] Full videoUrl received:', value);
-    }
-  });
-
-  // Handle completion
-  busboy.on('finish', async () => {
-    console.log('🏁 Busboy parsing completed');
-    console.log('📦 Form fields:', formFields);
-    console.log('📁 Audio file path:', audioFilePath);
-
-    if (processingComplete) return; // Prevent double processing
-    processingComplete = true;
-
-    try {
-      if (!audioFilePath) {
-        console.error('❌ No recordedAudio file received');
-        console.log('[END] Merge route failed - no audio file');
-        return res.status(400).json({ error: 'No recorded audio uploaded' });
+      // Special logging for videoUrl
+      if (fieldname === 'videoUrl') {
+        console.log('📺 [VIDEO] Full videoUrl received:', value);
       }
+    });
+
+    // Handle completion
+    busboy.on('finish', async () => {
+      console.log('🎯 [BUSBOY] 🔥 FINISH EVENT FIRED - busboy.on("finish") callback executing');
+      console.log('🏁 Busboy parsing completed');
+      console.log('📦 Form fields:', formFields);
+      console.log('📁 Audio file path:', audioFilePath);
+
+      try {
+        // Wait for all file writes to complete
+        console.log('⏳ [BUSBOY] Waiting for file writes to complete...');
+        await Promise.all(fileWritePromises);
+        console.log('✅ [BUSBOY] All file writes completed');
+        
+        // Resolve with the processed data
+        console.log('🎯 [BUSBOY] 🔥 RESOLVING PROMISE - allowing route to continue');
+        resolve({ audioFilePath, formFields });
+      } catch (error) {
+        console.error('❌ [BUSBOY] Error waiting for file writes:', error);
+        reject(error);
+      }
+    });
+
+    busboy.on('error', (error) => {
+      console.error('❌ [BUSBOY] 🔥 ERROR EVENT FIRED - busboy.on("error") callback executing');
+      console.error('❌ Busboy error:', error);
+      reject(error);
+    });
+
+    // Start processing
+    console.log('🚀 [BUSBOY] Starting req.pipe(busboy)...');
+    req.pipe(busboy);
+  });
+
+  try {
+    console.log('⏳ [ROUTE] Waiting for busboy processing to complete...');
+    const { audioFilePath, formFields } = await processBusboy;
+         console.log('✅ [ROUTE] Busboy processing completed successfully');
+     console.log('📁 Final audio path:', audioFilePath);
+     console.log('📝 Final form fields:', formFields);
+
+    if (!audioFilePath) {
+      console.error('❌ No recordedAudio file received');
+      console.log('[END] Merge route failed - no audio file');
+      return res.status(400).json({ error: 'No recorded audio uploaded' });
+    }
 
       // Create file object similar to multer format
       const file = {
@@ -230,24 +277,11 @@ app.post('/merge', (req, res) => {
       console.warn('🧹 [CLEANUP] ⚠️  Cleanup failed:', cleanupError.message);
     }
 
-    } catch (error) {
-      console.error('❌ Error in merge endpoint:', error);
-      console.log('[END] Merge route failed with error:', error.message);
-      res.status(500).json({ error: 'Internal server error', details: error.message });
-    }
-  });
-
-  // Handle busboy errors
-  busboy.on('error', (error) => {
-    console.error('❌ Busboy error:', error);
-    if (!processingComplete) {
-      processingComplete = true;
-      res.status(400).json({ error: 'Error parsing multipart data', details: error.message });
-    }
-  });
-
-  // Pipe the request to busboy
-  req.pipe(busboy);
+  } catch (busboyError) {
+    console.error('❌ [ROUTE] Busboy processing failed:', busboyError);
+    console.log('[END] Merge route failed during busboy processing:', busboyError.message);
+    res.status(400).json({ error: 'Error parsing multipart data', details: busboyError.message });
+  }
 });
 
 // Apply JSON parsing to all other routes (after /merge to avoid interference)

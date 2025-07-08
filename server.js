@@ -34,41 +34,125 @@ app.get('/health', (req, res) => {
 });
 
 app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
+  console.log('[🛬] POST /merge received');
+  console.log('📋 Request details:', {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    timestamp: new Date().toISOString()
+  });
+
   try {
+    console.log('📦 req.body:', req.body);
+    console.log('📁 req.file:', req.file);
+    
+    // Check if multer parsed the file correctly
+    if (!req.file) {
+      console.error('❌ No file uploaded - multer failed to parse');
+      return res.status(400).json({ error: 'No audio file uploaded' });
+    }
+    
+    console.log('✅ File parsed successfully:', {
+      filename: req.file.filename,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+      path: req.file.path
+    });
+
     const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = req.body;
     
-    if (!req.file || !videoUrl) {
-      return res.status(400).json({ error: 'Missing audio file or video URL' });
+    console.log('🔧 Parameters:', {
+      voiceGain,
+      trackGain,
+      videoUrl
+    });
+    
+    if (!videoUrl) {
+      console.error('❌ No videoUrl provided');
+      return res.status(400).json({ error: 'Missing video URL' });
     }
 
+    console.log('🌐 Downloading backing track from:', videoUrl);
+    
     // Download backing track
-    const videoResponse = await fetch(videoUrl);
+    let videoResponse;
+    try {
+      videoResponse = await fetch(videoUrl);
+      console.log('📥 Video download response:', videoResponse.status, videoResponse.statusText);
+    } catch (downloadError) {
+      console.error('❌ Video download failed:', downloadError);
+      return res.status(500).json({ error: 'Failed to download video URL' });
+    }
+
     const backingTrackPath = `/tmp/backing-${Date.now()}.mp4`;
-    const videoBuffer = await videoResponse.arrayBuffer();
-    fs.writeFileSync(backingTrackPath, Buffer.from(videoBuffer));
+    console.log('💾 Saving backing track to:', backingTrackPath);
+    
+    try {
+      const videoBuffer = await videoResponse.arrayBuffer();
+      fs.writeFileSync(backingTrackPath, Buffer.from(videoBuffer));
+      console.log('✅ Backing track saved successfully');
+    } catch (saveError) {
+      console.error('❌ Failed to save backing track:', saveError);
+      return res.status(500).json({ error: 'Failed to save backing track' });
+    }
 
     // FFmpeg merge command
     const outputPath = `/tmp/merged-${Date.now()}.mp4`;
+    console.log('🎬 Starting FFmpeg merge...');
+    console.log('🎵 Audio file:', req.file.path);
+    console.log('🎥 Video file:', backingTrackPath);
+    console.log('📽️  Output file:', outputPath);
+    
     const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${req.file.path}" -i "${backingTrackPath}" \
       -filter_complex "[0:a]aresample=async=1:first_pts=0,compand=attacks=0:points=-90/-90|-70/-20|-20/-5|0/0|20/0:soft-knee=6,equalizer=f=1800:width_type=h:width=200:g=3,dynaudnorm,highpass=f=300,volume=${voiceGain},agate=threshold=-30dB:ratio=2:attack=5:release=100[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
       -map 1:v:0 -map "[a]" -c:v copy -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
       "${outputPath}"`;
 
-    await execAsync(ffmpegCmd);
+    console.log('⚙️  FFmpeg command:', ffmpegCmd);
+
+    try {
+      await execAsync(ffmpegCmd);
+      console.log('✅ FFmpeg merge completed successfully');
+    } catch (ffmpegError) {
+      console.error('❌ FFmpeg merge failed:', ffmpegError);
+      return res.status(500).json({ error: 'FFmpeg processing failed', details: ffmpegError.message });
+    }
+
+    // Check if output file exists
+    if (!fs.existsSync(outputPath)) {
+      console.error('❌ Output file not created:', outputPath);
+      return res.status(500).json({ error: 'Merge output file not created' });
+    }
+
+    console.log('📤 Reading merged video file...');
+    const videoData = fs.readFileSync(outputPath);
+    console.log('📊 Video data size:', videoData.length, 'bytes');
 
     // Return merged video as response
-    const videoData = fs.readFileSync(outputPath);
     res.setHeader('Content-Type', 'video/mp4');
     res.send(videoData);
+    console.log('✅ Response sent successfully');
 
     // Cleanup
-    fs.unlinkSync(req.file.path);
-    fs.unlinkSync(backingTrackPath);
-    fs.unlinkSync(outputPath);
+    console.log('🧹 Cleaning up temporary files...');
+    try {
+      fs.unlinkSync(req.file.path);
+      fs.unlinkSync(backingTrackPath);
+      fs.unlinkSync(outputPath);
+      console.log('✅ Cleanup completed');
+    } catch (cleanupError) {
+      console.warn('⚠️  Cleanup failed:', cleanupError);
+    }
 
   } catch (error) {
-    console.error('Merge failed:', error);
-    res.status(500).json({ error: error.message });
+    console.error('❌ Merge failed - Unexpected error:', error);
+    console.error('❌ Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Merge processing failed', 
+      message: error.message,
+      stack: error.stack 
+    });
   }
 });
 

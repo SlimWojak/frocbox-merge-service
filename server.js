@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
+const Busboy = require('busboy');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
@@ -8,7 +8,6 @@ const fs = require('fs');
 const fetch = require('node-fetch');
 
 const execAsync = promisify(exec);
-const upload = multer({ dest: '/tmp/' });
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -33,7 +32,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-app.post('/merge', upload.any(), async (req, res) => {
+app.post('/merge', (req, res) => {
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
     method: req.method,
@@ -42,29 +41,68 @@ app.post('/merge', upload.any(), async (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  try {
-    console.log('📦 req.body:', req.body);
-    console.log('📁 req.files:', req.files);
-    
-    // Find the recordedAudio file from the files array
-    const file = req.files?.find(f => f.fieldname === 'recordedAudio');
-    
-    if (!file) {
-      console.error('❌ No recordedAudio file uploaded - multer.any() failed to find it');
-      console.error('Available files:', req.files?.map(f => ({ fieldname: f.fieldname, originalname: f.originalname })));
-      return res.status(400).json({ error: 'No recorded audio uploaded' });
-    }
-    
-    console.log('✅ File received:', {
-      fieldname: file.fieldname,
-      filename: file.filename,
-      originalname: file.originalname,
-      mimetype: file.mimetype,
-      size: file.size,
-      path: file.path
+  const busboy = new Busboy({ headers: req.headers });
+  let audioFilePath = null;
+  let formFields = {};
+  let processingComplete = false;
+
+  // Handle file uploads
+  busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+    console.log('📁 File received via busboy:', {
+      fieldname,
+      filename,
+      encoding,
+      mimetype
     });
 
-    const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = req.body;
+    if (fieldname === 'recordedAudio') {
+      audioFilePath = `/tmp/audio-${Date.now()}.webm`;
+      console.log('💾 Saving audio file to:', audioFilePath);
+      
+      const writeStream = fs.createWriteStream(audioFilePath);
+      file.pipe(writeStream);
+      
+      writeStream.on('close', () => {
+        console.log('✅ Audio file saved successfully');
+      });
+    } else {
+      console.log('⚠️  Unexpected file field:', fieldname);
+      file.resume(); // Drain the file stream
+    }
+  });
+
+  // Handle form fields
+  busboy.on('field', (fieldname, value) => {
+    console.log('📝 Form field received:', fieldname, '=', value);
+    formFields[fieldname] = value;
+  });
+
+  // Handle completion
+  busboy.on('finish', async () => {
+    console.log('🏁 Busboy parsing completed');
+    console.log('📦 Form fields:', formFields);
+    console.log('📁 Audio file path:', audioFilePath);
+
+    if (processingComplete) return; // Prevent double processing
+    processingComplete = true;
+
+    try {
+      if (!audioFilePath) {
+        console.error('❌ No recordedAudio file received');
+        return res.status(400).json({ error: 'No recorded audio uploaded' });
+      }
+
+      // Create file object similar to multer format
+      const file = {
+        fieldname: 'recordedAudio',
+        path: audioFilePath,
+        filename: path.basename(audioFilePath),
+        mimetype: 'audio/webm'
+      };
+
+      console.log('✅ File object created:', file);
+
+      const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = formFields;
     
     console.log('🔧 Parameters:', {
       voiceGain,
@@ -149,15 +187,23 @@ app.post('/merge', upload.any(), async (req, res) => {
       console.warn('⚠️  Cleanup failed:', cleanupError);
     }
 
-  } catch (error) {
-    console.error('❌ Merge failed - Unexpected error:', error);
-    console.error('❌ Error stack:', error.stack);
-    res.status(500).json({ 
-      error: 'Merge processing failed', 
-      message: error.message,
-      stack: error.stack 
-    });
-  }
+    } catch (error) {
+      console.error('❌ Error in merge endpoint:', error);
+      res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+  });
+
+  // Handle busboy errors
+  busboy.on('error', (error) => {
+    console.error('❌ Busboy error:', error);
+    if (!processingComplete) {
+      processingComplete = true;
+      res.status(400).json({ error: 'Error parsing multipart data', details: error.message });
+    }
+  });
+
+  // Pipe the request to busboy
+  req.pipe(busboy);
 });
 
 app.listen(port, () => {

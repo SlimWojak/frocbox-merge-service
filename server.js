@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
-const Busboy = require('busboy');
+const busboy = require('busboy');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
 const fetch = require('node-fetch');
+const { v4: uuidv4 } = require('uuid');
+const { scorePerformance } = require('./helpers/score-performance');
 
 const execAsync = promisify(exec);
 
@@ -39,7 +41,7 @@ app.post('/merge', async (req, res) => {
 
   // Wrap busboy processing in Promise to ensure proper async handling
   const processBusboy = new Promise((resolve, reject) => {
-    const busboy = new Busboy({ headers: req.headers });
+    const busboyInstance = busboy({ headers: req.headers });
     let audioFilePath = null;
     let formFields = {};
     let fileWritePromises = [];
@@ -47,7 +49,7 @@ app.post('/merge', async (req, res) => {
     console.log('🔄 [BUSBOY] Initializing busboy processing...');
 
     // Handle file uploads
-    busboy.on('file', (fieldname, file, filename, encoding, mimetype) => {
+    busboyInstance.on('file', (fieldname, file, filename, encoding, mimetype) => {
       console.log('🎙️ [UPLOAD] 🔥 FILE EVENT FIRED - busboy.on("file") callback executing');
       console.log('🎙️ [UPLOAD] File received via busboy:', {
         fieldname,
@@ -68,6 +70,40 @@ app.post('/merge', async (req, res) => {
           writeStream.on('close', () => {
             const stats = fs.statSync(audioFilePath);
             console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', stats.size, 'bytes');
+            
+            // Additional file size verification using fs.stat
+            fs.stat(audioFilePath, (err, stats) => {
+              if (err) {
+                console.error('🎙️ [UPLOAD] ❌ Error checking file stats:', err);
+              } else {
+                console.log('🎙️ [UPLOAD] Saved file size:', stats?.size);
+                if (stats.size === 0) {
+                  console.error('🎙️ [UPLOAD] ⚠️  WARNING: Audio file is zero bytes!');
+                } else {
+                  // Log first 100 bytes of the audio file to verify integrity
+                  try {
+                    const buffer = fs.readFileSync(audioFilePath);
+                    const first100Bytes = buffer.slice(0, 100);
+                    console.log('🎙️ [UPLOAD] First 100 bytes (hex):', first100Bytes.toString('hex'));
+                    console.log('🎙️ [UPLOAD] First 100 bytes (base64):', first100Bytes.toString('base64'));
+                    
+                    // Check if it looks like a valid WebM file (starts with specific magic bytes)
+                    const magicBytes = buffer.slice(0, 4);
+                    console.log('🎙️ [UPLOAD] File magic bytes:', magicBytes.toString('hex'));
+                    
+                    // WebM files start with EBML header (0x1A45DFA3)
+                    if (magicBytes.toString('hex').startsWith('1a45dfa3')) {
+                      console.log('🎙️ [UPLOAD] ✅ Detected WebM/EBML format');
+                    } else {
+                      console.log('🎙️ [UPLOAD] ⚠️  File does not appear to be WebM format');
+                    }
+                  } catch (readError) {
+                    console.error('🎙️ [UPLOAD] ❌ Error reading audio file for inspection:', readError);
+                  }
+                }
+              }
+            });
+            
             fileResolve();
           });
           
@@ -85,7 +121,7 @@ app.post('/merge', async (req, res) => {
     });
 
     // Handle form fields
-    busboy.on('field', (fieldname, value) => {
+    busboyInstance.on('field', (fieldname, value) => {
       console.log('📝 [FORM] 🔥 FIELD EVENT FIRED - busboy.on("field") callback executing');
       console.log('📝 [FORM] Field received:', fieldname, '=', value);
       formFields[fieldname] = value;
@@ -97,7 +133,7 @@ app.post('/merge', async (req, res) => {
     });
 
     // Handle completion
-    busboy.on('finish', async () => {
+    busboyInstance.on('finish', async () => {
       console.log('🎯 [BUSBOY] 🔥 FINISH EVENT FIRED - busboy.on("finish") callback executing');
       console.log('🏁 Busboy parsing completed');
       console.log('📦 Form fields:', formFields);
@@ -118,7 +154,7 @@ app.post('/merge', async (req, res) => {
       }
     });
 
-    busboy.on('error', (error) => {
+    busboyInstance.on('error', (error) => {
       console.error('❌ [BUSBOY] 🔥 ERROR EVENT FIRED - busboy.on("error") callback executing');
       console.error('❌ Busboy error:', error);
       reject(error);
@@ -126,7 +162,7 @@ app.post('/merge', async (req, res) => {
 
     // Start processing
     console.log('🚀 [BUSBOY] Starting req.pipe(busboy)...');
-    req.pipe(busboy);
+    req.pipe(busboyInstance);
   });
 
   try {
@@ -140,6 +176,49 @@ app.post('/merge', async (req, res) => {
       console.error('❌ No recordedAudio file received');
       console.log('[END] Merge route failed - no audio file');
       return res.status(400).json({ error: 'No recorded audio uploaded' });
+    }
+
+    // Verify the audio file is readable and non-empty
+    console.log('🎙️ [UPLOAD] Verifying audio file readability...');
+    try {
+      const readStream = fs.createReadStream(audioFilePath);
+      readStream.on('error', err => {
+        console.error('🎙️ [UPLOAD] Error reading audio file:', err);
+      });
+      readStream.on('open', () => {
+        console.log('🎙️ [UPLOAD] ✅ Audio file successfully opened for reading');
+      });
+      // Close the stream immediately since we're just testing readability
+      readStream.destroy();
+    } catch (readError) {
+      console.error('🎙️ [UPLOAD] ❌ Failed to create readStream:', readError);
+    }
+
+    // Validate audio file with ffprobe before proceeding
+    console.log('🔍 [FFPROBE] Validating audio file format...');
+    try {
+      const ffprobeCmd = `ffprobe -v error -show_format -show_streams "${audioFilePath}"`;
+      console.log('🔍 [FFPROBE] Command:', ffprobeCmd);
+      
+      const ffprobeResult = await execAsync(ffprobeCmd);
+      console.log('🔍 [FFPROBE] ✅ Audio file validation successful');
+      console.log('🔍 [FFPROBE] Format info:', ffprobeResult.stdout);
+      
+      // Check if there are any audio streams
+      if (ffprobeResult.stdout.includes('codec_type=audio')) {
+        console.log('🔍 [FFPROBE] ✅ Audio stream detected');
+      } else {
+        console.log('🔍 [FFPROBE] ⚠️  No audio stream detected in file');
+      }
+    } catch (ffprobeError) {
+      console.error('🔍 [FFPROBE] ❌ Audio file validation failed:', ffprobeError.message);
+      console.error('🔍 [FFPROBE] Error details:', ffprobeError.stderr || ffprobeError.stdout);
+      console.log('[END] Merge route failed at ffprobe validation stage');
+      return res.status(400).json({ 
+        error: 'Invalid audio file format', 
+        details: ffprobeError.message,
+        ffprobeOutput: ffprobeError.stderr || ffprobeError.stdout
+      });
     }
 
       // Create file object similar to multer format
@@ -167,6 +246,9 @@ app.post('/merge', async (req, res) => {
     }
 
     console.log('📺 [VIDEO] Starting download from:', videoUrl);
+    console.log('📺 [VIDEO] Full video URL:', videoUrl);
+    console.log('📺 [VIDEO] URL length:', videoUrl.length);
+    console.log('📺 [VIDEO] URL protocol:', videoUrl.startsWith('https://') ? 'HTTPS' : videoUrl.startsWith('http://') ? 'HTTP' : 'Unknown');
     
     // Download backing track
     let videoResponse;
@@ -176,10 +258,23 @@ app.post('/merge', async (req, res) => {
       console.log('📺 [VIDEO] ✅ Fetch response - Status:', videoResponse.status, 'StatusText:', videoResponse.statusText);
       console.log('📺 [VIDEO] Response headers:', {
         'content-type': videoResponse.headers.get('content-type'),
-        'content-length': videoResponse.headers.get('content-length')
+        'content-length': videoResponse.headers.get('content-length'),
+        'content-encoding': videoResponse.headers.get('content-encoding'),
+        'accept-ranges': videoResponse.headers.get('accept-ranges'),
+        'server': videoResponse.headers.get('server'),
+        'etag': videoResponse.headers.get('etag')
       });
+      
+      // Log all response headers for debugging
+      const allHeaders = {};
+      videoResponse.headers.forEach((value, key) => {
+        allHeaders[key] = value;
+      });
+      console.log('📺 [VIDEO] All response headers:', allHeaders);
+      
     } catch (downloadError) {
       console.error('📺 [VIDEO] ❌ Download failed:', downloadError.message);
+      console.error('📺 [VIDEO] Download error stack:', downloadError.stack);
       console.log('[END] Merge route failed at video download stage');
       return res.status(500).json({ error: 'Failed to download video URL' });
     }
@@ -194,6 +289,61 @@ app.post('/merge', async (req, res) => {
       fs.writeFileSync(backingTrackPath, Buffer.from(videoBuffer));
       const savedStats = fs.statSync(backingTrackPath);
       console.log('📺 [VIDEO] ✅ Backing track saved - Path:', backingTrackPath, 'Size:', savedStats.size, 'bytes');
+      
+      // Log first 100 bytes of video file to verify integrity
+      try {
+        const videoFileBuffer = fs.readFileSync(backingTrackPath);
+        const first100Bytes = videoFileBuffer.slice(0, 100);
+        console.log('📺 [VIDEO] First 100 bytes (hex):', first100Bytes.toString('hex'));
+        console.log('📺 [VIDEO] First 100 bytes (base64):', first100Bytes.toString('base64'));
+        
+        // Check if it looks like a valid MP4 file (starts with ftyp box)
+        const magicBytes = videoFileBuffer.slice(0, 12);
+        console.log('📺 [VIDEO] File magic bytes:', magicBytes.toString('hex'));
+        
+        // MP4 files typically have 'ftyp' at offset 4-7
+        if (magicBytes.slice(4, 8).toString('ascii') === 'ftyp') {
+          console.log('📺 [VIDEO] ✅ Detected MP4 format');
+        } else {
+          console.log('📺 [VIDEO] ⚠️  File does not appear to be MP4 format');
+        }
+      } catch (readError) {
+        console.error('📺 [VIDEO] ❌ Error reading video file for inspection:', readError);
+      }
+      
+      // Validate video file with ffprobe before proceeding
+      console.log('🔍 [FFPROBE] Validating video file format...');
+      try {
+        const ffprobeCmd = `ffprobe -v error -show_format -show_streams "${backingTrackPath}"`;
+        console.log('🔍 [FFPROBE] Command:', ffprobeCmd);
+        
+        const ffprobeResult = await execAsync(ffprobeCmd);
+        console.log('🔍 [FFPROBE] ✅ Video file validation successful');
+        console.log('🔍 [FFPROBE] Video format info:', ffprobeResult.stdout);
+        
+        // Check if there are video and audio streams
+        if (ffprobeResult.stdout.includes('codec_type=video')) {
+          console.log('🔍 [FFPROBE] ✅ Video stream detected');
+        } else {
+          console.log('🔍 [FFPROBE] ⚠️  No video stream detected in file');
+        }
+        
+        if (ffprobeResult.stdout.includes('codec_type=audio')) {
+          console.log('🔍 [FFPROBE] ✅ Audio stream detected in video');
+        } else {
+          console.log('🔍 [FFPROBE] ⚠️  No audio stream detected in video');
+        }
+      } catch (ffprobeError) {
+        console.error('🔍 [FFPROBE] ❌ Video file validation failed:', ffprobeError.message);
+        console.error('🔍 [FFPROBE] Error details:', ffprobeError.stderr || ffprobeError.stdout);
+        console.log('[END] Merge route failed at video ffprobe validation stage');
+        return res.status(400).json({ 
+          error: 'Invalid video file format', 
+          details: ffprobeError.message,
+          ffprobeOutput: ffprobeError.stderr || ffprobeError.stdout
+        });
+      }
+      
     } catch (saveError) {
       console.error('📺 [VIDEO] ❌ Failed to save backing track:', saveError.message);
       console.log('[END] Merge route failed at video save stage');
@@ -247,16 +397,61 @@ app.post('/merge', async (req, res) => {
       const videoData = fs.readFileSync(outputPath);
       console.log('✅ [RESPONSE] Video data loaded - Size:', videoData.length, 'bytes');
 
-      // Return merged video as response
-      console.log('✅ [RESPONSE] Setting headers and sending response...');
-      res.setHeader('Content-Type', 'video/mp4');
+      // Convert WebM audio to WAV for scoring
+      console.log('🎯 [SCORING] Converting audio to WAV for analysis...');
+      const wavPath = `/tmp/scoring-${Date.now()}.wav`;
+      const wavConvertCmd = `ffmpeg -y -i "${file.path}" -ac 1 -ar 44100 "${wavPath}"`;
+      console.log('🎯 [SCORING] WAV conversion command:', wavConvertCmd);
       
-      // Force log flush with small delay before response
-      console.log('[END] Merge route completed successfully - About to send response');
-      setTimeout(() => {
-        res.send(videoData);
-        console.log('✅ [RESPONSE] 🎉 Response sent successfully - Total size:', videoData.length, 'bytes');
-      }, 100);
+      let scoreResult = null;
+      try {
+        await execAsync(wavConvertCmd);
+        console.log('🎯 [SCORING] ✅ WAV conversion completed');
+        
+        // Run scoring analysis
+        scoreResult = await scorePerformance(wavPath);
+        console.log('🎯 [SCORING] ✅ Performance scoring completed:', scoreResult);
+        
+        // Clean up WAV file
+        fs.unlinkSync(wavPath);
+        console.log('🎯 [SCORING] WAV file cleaned up');
+        
+      } catch (scoringError) {
+        console.error('🎯 [SCORING] ❌ Scoring failed:', scoringError.message);
+        // Use default scores if scoring fails
+        scoreResult = {
+          pitch: 50,
+          rhythm: 50,
+          total: 50,
+          verdict: "🤔 Analysis failed"
+        };
+      }
+
+      // Generate unique video ID
+      const videoUid = uuidv4();
+      console.log('🆔 [RESPONSE] Generated videoUid:', videoUid);
+
+      // Convert video to base64 for JSON response
+      const videoBase64 = `data:video/mp4;base64,${videoData.toString('base64')}`;
+      console.log('📹 [RESPONSE] Video converted to base64 - Size:', videoBase64.length, 'chars');
+
+      // Return JSON response with scoring
+      const jsonResponse = {
+        success: true,
+        videoUid,
+        videoUrl: videoBase64,
+        scoreResult,
+        tokenId: 'temp-token-id'
+      };
+
+      console.log('🎯 [SCORING] Final score before response:', scoreResult);
+      console.log('✅ [RESPONSE] Setting headers and sending JSON response...');
+      res.setHeader('Content-Type', 'application/json');
+      
+      console.log('[END] Merge route completed successfully - About to send JSON response');
+      res.json(jsonResponse);
+      console.log('✅ [RESPONSE] 🎉 JSON response sent successfully');
+      
     } catch (readError) {
       console.error('✅ [RESPONSE] ❌ Failed to read output file:', readError.message);
       console.log('[END] Merge route failed at response stage');
@@ -267,11 +462,11 @@ app.post('/merge', async (req, res) => {
     console.log('🧹 [CLEANUP] Removing temporary files...');
     try {
       console.log('🧹 [CLEANUP] Removing audio file:', file.path);
-      fs.unlinkSync(file.path);
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
       console.log('🧹 [CLEANUP] Removing video file:', backingTrackPath);
-      fs.unlinkSync(backingTrackPath);
+      if (fs.existsSync(backingTrackPath)) fs.unlinkSync(backingTrackPath);
       console.log('🧹 [CLEANUP] Removing output file:', outputPath);
-      fs.unlinkSync(outputPath);
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
       console.log('🧹 [CLEANUP] ✅ All temporary files removed');
     } catch (cleanupError) {
       console.warn('🧹 [CLEANUP] ⚠️  Cleanup failed:', cleanupError.message);

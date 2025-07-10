@@ -1,0 +1,12 @@
+[variables]
+NPM_CONFIG_LEGACY_PEER_DEPS = "true"
+
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "npm"]
+
+[phases.install]
+dependsOn = ["setup"]
+cmds = ["npm ci --legacy-peer-deps --omit=dev"]
+
+[start]
+cmd = "npm start" 

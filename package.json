@@ -8,9 +8,10 @@
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "busboy": "^1.6.0",
+    "busboy": "1.6.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "multer": "^2.0.1",
     "node-fetch": "^2.6.7",
     "pitchfinder": "^2.3.2",
     "uuid": "^11.1.0",

@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const busboy = require('busboy');
+const multer = require('multer');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
@@ -13,6 +13,9 @@ const execAsync = promisify(exec);
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Set up multer with memory storage
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Configure CORS to allow requests from your frontend domain
 const corsOptions = {
@@ -29,7 +32,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 // CRITICAL: Handle /merge route BEFORE any body parsing middleware to bypass GraphQL interference
-app.post('/merge', async (req, res) => {
+app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
   console.log('[START] Merge route processing initiated');
   console.log('[🛬] POST /merge received');
   console.log('📋 Request details:', {
@@ -39,143 +42,48 @@ app.post('/merge', async (req, res) => {
     timestamp: new Date().toISOString()
   });
 
-  // Wrap busboy processing in Promise to ensure proper async handling
-  const processBusboy = new Promise((resolve, reject) => {
-    const busboyInstance = busboy({ headers: req.headers });
-    let audioFilePath = null;
-    let formFields = {};
-    let fileWritePromises = [];
-
-    console.log('🔄 [BUSBOY] Initializing busboy processing...');
-
-    // Handle file uploads
-    busboyInstance.on('file', (fieldname, file, filename, encoding, mimetype) => {
-      console.log('🎙️ [UPLOAD] 🔥 FILE EVENT FIRED - busboy.on("file") callback executing');
-      console.log('🎙️ [UPLOAD] File received via busboy:', {
-        fieldname,
-        filename,
-        encoding,
-        mimetype
-      });
-
-      if (fieldname === 'recordedAudio') {
-        audioFilePath = `/tmp/audio-${Date.now()}.webm`;
-        console.log('🎙️ [UPLOAD] Saving audio file to:', audioFilePath);
-        
-        // Create promise for file write completion
-        const fileWritePromise = new Promise((fileResolve, fileReject) => {
-          const writeStream = fs.createWriteStream(audioFilePath);
-          file.pipe(writeStream);
-          
-          writeStream.on('close', () => {
-            const stats = fs.statSync(audioFilePath);
-            console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', stats.size, 'bytes');
-            
-            // Additional file size verification using fs.stat
-            fs.stat(audioFilePath, (err, stats) => {
-              if (err) {
-                console.error('🎙️ [UPLOAD] ❌ Error checking file stats:', err);
-              } else {
-                console.log('🎙️ [UPLOAD] Saved file size:', stats?.size);
-                if (stats.size === 0) {
-                  console.error('🎙️ [UPLOAD] ⚠️  WARNING: Audio file is zero bytes!');
-                } else {
-                  // Log first 100 bytes of the audio file to verify integrity
-                  try {
-                    const buffer = fs.readFileSync(audioFilePath);
-                    const first100Bytes = buffer.slice(0, 100);
-                    console.log('🎙️ [UPLOAD] First 100 bytes (hex):', first100Bytes.toString('hex'));
-                    console.log('🎙️ [UPLOAD] First 100 bytes (base64):', first100Bytes.toString('base64'));
-                    
-                    // Check if it looks like a valid WebM file (starts with specific magic bytes)
-                    const magicBytes = buffer.slice(0, 4);
-                    console.log('🎙️ [UPLOAD] File magic bytes:', magicBytes.toString('hex'));
-                    
-                    // WebM files start with EBML header (0x1A45DFA3)
-                    if (magicBytes.toString('hex').startsWith('1a45dfa3')) {
-                      console.log('🎙️ [UPLOAD] ✅ Detected WebM/EBML format');
-                    } else {
-                      console.log('🎙️ [UPLOAD] ⚠️  File does not appear to be WebM format');
-                    }
-                  } catch (readError) {
-                    console.error('🎙️ [UPLOAD] ❌ Error reading audio file for inspection:', readError);
-                  }
-                }
-              }
-            });
-            
-            fileResolve();
-          });
-          
-          writeStream.on('error', (error) => {
-            console.error('🎙️ [UPLOAD] ❌ File write error:', error);
-            fileReject(error);
-          });
-        });
-        
-        fileWritePromises.push(fileWritePromise);
-      } else {
-        console.log('⚠️  [UPLOAD] Unexpected file field:', fieldname);
-        file.resume(); // Drain the file stream
-      }
-    });
-
-    // Handle form fields
-    busboyInstance.on('field', (fieldname, value) => {
-      console.log('📝 [FORM] 🔥 FIELD EVENT FIRED - busboy.on("field") callback executing');
-      console.log('📝 [FORM] Field received:', fieldname, '=', value);
-      formFields[fieldname] = value;
-      
-      // Special logging for videoUrl
-      if (fieldname === 'videoUrl') {
-        console.log('📺 [VIDEO] Full videoUrl received:', value);
-      }
-    });
-
-    // Handle completion
-    busboyInstance.on('finish', async () => {
-      console.log('🎯 [BUSBOY] 🔥 FINISH EVENT FIRED - busboy.on("finish") callback executing');
-      console.log('🏁 Busboy parsing completed');
-      console.log('📦 Form fields:', formFields);
-      console.log('📁 Audio file path:', audioFilePath);
-
-      try {
-        // Wait for all file writes to complete
-        console.log('⏳ [BUSBOY] Waiting for file writes to complete...');
-        await Promise.all(fileWritePromises);
-        console.log('✅ [BUSBOY] All file writes completed');
-        
-        // Resolve with the processed data
-        console.log('🎯 [BUSBOY] 🔥 RESOLVING PROMISE - allowing route to continue');
-        resolve({ audioFilePath, formFields });
-      } catch (error) {
-        console.error('❌ [BUSBOY] Error waiting for file writes:', error);
-        reject(error);
-      }
-    });
-
-    busboyInstance.on('error', (error) => {
-      console.error('❌ [BUSBOY] 🔥 ERROR EVENT FIRED - busboy.on("error") callback executing');
-      console.error('❌ Busboy error:', error);
-      reject(error);
-    });
-
-    // Start processing
-    console.log('🚀 [BUSBOY] Starting req.pipe(busboy)...');
-    req.pipe(busboyInstance);
-  });
-
   try {
-    console.log('⏳ [ROUTE] Waiting for busboy processing to complete...');
-    const { audioFilePath, formFields } = await processBusboy;
-         console.log('✅ [ROUTE] Busboy processing completed successfully');
-     console.log('📁 Final audio path:', audioFilePath);
-     console.log('📝 Final form fields:', formFields);
+    // Access the uploaded file via req.file.buffer
+    const audioBuffer = req.file.buffer;
+    const filename = req.file.originalname;
+    
+    console.log('🎙️ [UPLOAD] File received via multer:', {
+      fieldname: req.file.fieldname,
+      filename: filename,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
 
-    if (!audioFilePath) {
+    if (!audioBuffer) {
       console.error('❌ No recordedAudio file received');
       console.log('[END] Merge route failed - no audio file');
       return res.status(400).json({ error: 'No recorded audio uploaded' });
+    }
+
+    // Write the buffer to /tmp like before
+    const audioFilePath = `/tmp/audio-${Date.now()}-${filename}`;
+    fs.writeFileSync(audioFilePath, audioBuffer);
+    
+    console.log('🎙️ [UPLOAD] ✅ Audio file saved - Path:', audioFilePath, 'Size:', audioBuffer.length, 'bytes');
+    
+    // Log first 100 bytes of the audio file to verify integrity
+    try {
+      const first100Bytes = audioBuffer.slice(0, 100);
+      console.log('🎙️ [UPLOAD] First 100 bytes (hex):', first100Bytes.toString('hex'));
+      console.log('🎙️ [UPLOAD] First 100 bytes (base64):', first100Bytes.toString('base64'));
+      
+      // Check if it looks like a valid WebM file (starts with specific magic bytes)
+      const magicBytes = audioBuffer.slice(0, 4);
+      console.log('🎙️ [UPLOAD] File magic bytes:', magicBytes.toString('hex'));
+      
+      // WebM files start with EBML header (0x1A45DFA3)
+      if (magicBytes.toString('hex').startsWith('1a45dfa3')) {
+        console.log('🎙️ [UPLOAD] ✅ Detected WebM/EBML format');
+      } else {
+        console.log('🎙️ [UPLOAD] ⚠️  File does not appear to be WebM format');
+      }
+    } catch (readError) {
+      console.error('🎙️ [UPLOAD] ❌ Error reading audio file for inspection:', readError);
     }
 
     // Verify the audio file is readable and non-empty
@@ -231,7 +139,7 @@ app.post('/merge', async (req, res) => {
 
       console.log('✅ File object created:', file);
 
-      const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = formFields;
+      const { voiceGain = 0.6, trackGain = 1.7, videoUrl } = req.body;
     
     console.log('🔧 Parameters:', {
       voiceGain,
@@ -418,12 +326,14 @@ app.post('/merge', async (req, res) => {
         
       } catch (scoringError) {
         console.error('🎯 [SCORING] ❌ Scoring failed:', scoringError.message);
-        // Use default scores if scoring fails
+        // 🛠️ FIXED: Use correct field names matching pre-Railway version
         scoreResult = {
-          pitch: 50,
-          rhythm: 50,
-          total: 50,
-          verdict: "🤔 Analysis failed"
+          pitchScore: 50,
+          rhythmScore: 50,
+          finalScore: 50,
+          verdict: "🤔 Analysis failed",
+          clarity: 0,
+          midiRange: 0
         };
       }
 
@@ -431,26 +341,94 @@ app.post('/merge', async (req, res) => {
       const videoUid = uuidv4();
       console.log('🆔 [RESPONSE] Generated videoUid:', videoUid);
 
-      // Convert video to base64 for JSON response
-      const videoBase64 = `data:video/mp4;base64,${videoData.toString('base64')}`;
-      console.log('📹 [RESPONSE] Video converted to base64 - Size:', videoBase64.length, 'chars');
+      // 🔧 PRODUCTION FIX: Don't include full video in JSON response to avoid 4MB limit
+      // Instead, return a reference that can be fetched separately
+      console.log('📹 [RESPONSE] Video data size:', videoData.length, 'bytes');
+      
+      // Store video temporarily and return reference
+      const videoTempPath = `/tmp/response-${videoUid}.mp4`;
+      fs.writeFileSync(videoTempPath, videoData);
+      console.log('📹 [RESPONSE] Video saved to temp path:', videoTempPath);
 
-      // Return JSON response with scoring
+      // Return JSON response with video reference instead of full data
       const jsonResponse = {
         success: true,
         videoUid,
-        videoUrl: videoBase64,
+        videoUrl: `${process.env.RAILWAY_SERVICE_URL || 'http://localhost:3002'}/video/${videoUid}`,
         scoreResult,
         tokenId: 'temp-token-id'
       };
 
       console.log('🎯 [SCORING] Final score before response:', scoreResult);
       console.log('✅ [RESPONSE] Setting headers and sending JSON response...');
+      
+      // 🔍 PRODUCTION DEBUG: Enhanced response logging
+      console.log('🔍 [RESPONSE DEBUG] About to set content-type header');
       res.setHeader('Content-Type', 'application/json');
+      console.log('🔍 [RESPONSE DEBUG] Content-Type header set to:', res.getHeader('Content-Type'));
+      
+      // 🔍 PRODUCTION DEBUG: Log the exact JSON response being sent
+      console.log('🔍 [RESPONSE DEBUG] JSON response object:', {
+        success: jsonResponse.success,
+        videoUid: jsonResponse.videoUid,
+        videoUrlLength: jsonResponse.videoUrl?.length || 0,
+        scoreResult: jsonResponse.scoreResult,
+        tokenId: jsonResponse.tokenId
+      });
+      
+      // 🔍 PRODUCTION DEBUG: Log the JSON response
+      const jsonString = JSON.stringify(jsonResponse);
+      console.log('🔍 [RESPONSE DEBUG] JSON string length:', jsonString.length);
+      console.log('🔍 [RESPONSE DEBUG] Response structure:', {
+        success: jsonResponse.success,
+        videoUid: jsonResponse.videoUid,
+        videoUrl: jsonResponse.videoUrl,
+        scoreResult: jsonResponse.scoreResult,
+        tokenId: jsonResponse.tokenId
+      });
+      
+      // 🔍 PRODUCTION DEBUG: Verify JSON is valid before sending
+      try {
+        JSON.parse(jsonString);
+        console.log('🔍 [RESPONSE DEBUG] ✅ JSON is valid');
+      } catch (parseError) {
+        console.error('🔍 [RESPONSE DEBUG] ❌ JSON is INVALID:', parseError);
+        return res.status(500).json({ error: 'Invalid JSON response generated', details: String(parseError) });
+      }
       
       console.log('[END] Merge route completed successfully - About to send JSON response');
-      res.json(jsonResponse);
+      
+      // 🚨 CRITICAL FIX: Ensure this is the ONLY response path
+      if (res.headersSent) {
+        console.error('🚨 [RESPONSE] Headers already sent! Cannot send response again');
+        return;
+      }
+      
+      // 🔧 CRITICAL FIX: Ensure we're sending JSON data, not MP4 data
+      // Double-check that we're not accidentally sending binary data
+      if (jsonString.includes('ftyp') || jsonString.includes('mp4') || jsonString.charCodeAt(0) === 0) {
+        console.error('🚨 [RESPONSE] CRITICAL ERROR: JSON response contains binary MP4 data!');
+        console.error('🚨 [RESPONSE] First 100 chars:', jsonString.substring(0, 100));
+        console.error('🚨 [RESPONSE] First 10 char codes:', jsonString.substring(0, 10).split('').map(c => c.charCodeAt(0)));
+        return res.status(500).json({ error: 'Server error: binary data detected in JSON response' });
+      }
+      
+      // 🔧 CRITICAL FIX: Validate JSON structure one more time
+      if (!jsonString.startsWith('{') || !jsonString.endsWith('}')) {
+        console.error('🚨 [RESPONSE] CRITICAL ERROR: JSON response malformed!');
+        console.error('🚨 [RESPONSE] Response starts with:', jsonString.substring(0, 50));
+        console.error('🚨 [RESPONSE] Response ends with:', jsonString.substring(jsonString.length - 50));
+        return res.status(500).json({ error: 'Server error: malformed JSON response' });
+      }
+      
+      // 🔍 PRODUCTION DEBUG: Use res.json() instead of res.send() for guaranteed JSON handling
+      res.status(200).json(jsonResponse);
+      
       console.log('✅ [RESPONSE] 🎉 JSON response sent successfully');
+      console.log('🔍 [RESPONSE DEBUG] Response has been sent to client');
+      
+      // 🚨 CRITICAL FIX: RETURN immediately after response to prevent any further execution
+      return;
       
     } catch (readError) {
       console.error('✅ [RESPONSE] ❌ Failed to read output file:', readError.message);
@@ -458,7 +436,10 @@ app.post('/merge', async (req, res) => {
       return res.status(500).json({ error: 'Failed to read merged video', details: readError.message });
     }
 
-    // Cleanup
+    // 🚨 SAFETY CHECK: This should NEVER be reached after successful response
+    console.error('🚨 [CONTROL FLOW] Reached cleanup section after response - this should not happen!');
+    
+    // Cleanup - this should only run if there was an error above
     console.log('🧹 [CLEANUP] Removing temporary files...');
     try {
       console.log('🧹 [CLEANUP] Removing audio file:', file.path);
@@ -472,15 +453,61 @@ app.post('/merge', async (req, res) => {
       console.warn('🧹 [CLEANUP] ⚠️  Cleanup failed:', cleanupError.message);
     }
 
-  } catch (busboyError) {
-    console.error('❌ [ROUTE] Busboy processing failed:', busboyError);
-    console.log('[END] Merge route failed during busboy processing:', busboyError.message);
-    res.status(400).json({ error: 'Error parsing multipart data', details: busboyError.message });
+  } catch (error) {
+    console.error('❌ [ROUTE] Merge processing failed:', error);
+    console.log('[END] Merge route failed during processing:', error.message);
+    
+    // 🚨 SAFETY CHECK: Ensure response hasn't been sent already
+    if (!res.headersSent) {
+      res.status(400).json({ error: 'Error processing request', details: error.message });
+    } else {
+      console.error('🚨 [ERROR] Cannot send error response - headers already sent');
+    }
   }
 });
 
 // Apply JSON parsing to all other routes (after /merge to avoid interference)
 app.use(express.json());
+
+// 🔧 PRODUCTION FIX: Add video serving endpoint
+app.get('/video/:videoUid', (req, res) => {
+  const { videoUid } = req.params;
+  const videoPath = `/tmp/response-${videoUid}.mp4`;
+  
+  console.log('📹 [VIDEO SERVE] Request for video:', videoUid);
+  console.log('📹 [VIDEO SERVE] Looking for file:', videoPath);
+  
+  if (!fs.existsSync(videoPath)) {
+    console.error('📹 [VIDEO SERVE] ❌ Video file not found:', videoPath);
+    return res.status(404).json({ error: 'Video not found' });
+  }
+  
+  try {
+    const videoData = fs.readFileSync(videoPath);
+    console.log('📹 [VIDEO SERVE] ✅ Serving video, size:', videoData.length, 'bytes');
+    
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', videoData.length);
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+    res.status(200).send(videoData);
+    
+    // Clean up file after serving (optional - could keep for caching)
+    setTimeout(() => {
+      try {
+        if (fs.existsSync(videoPath)) {
+          fs.unlinkSync(videoPath);
+          console.log('📹 [VIDEO SERVE] 🧹 Cleaned up video file:', videoPath);
+        }
+      } catch (cleanupError) {
+        console.warn('📹 [VIDEO SERVE] ⚠️  Cleanup failed:', cleanupError);
+      }
+    }, 60000); // Clean up after 1 minute
+    
+  } catch (error) {
+    console.error('📹 [VIDEO SERVE] ❌ Error serving video:', error);
+    res.status(500).json({ error: 'Failed to serve video' });
+  }
+});
 
 // Add a simple health check endpoint
 app.get('/health', (req, res) => {

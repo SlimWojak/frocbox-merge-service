@@ -1,10 +1,4 @@
-FORCE RAILWAY REDEPLOY - 2025-07-09
-- CRITICAL FIX: Resolve "Response validation failed - detected MP4 data" error
-- Enhanced Railway service to validate JSON responses and prevent MP4 data corruption
-- Improved proxy validation with explicit MP4 magic byte detection
-- Added comprehensive logging to trace response flow and identify issues
-- Railway service now uses res.json() instead of res.send() for guaranteed JSON handling
-- Proxy now provides detailed error messages for debugging MP4 validation failures
-
-This deployment should completely resolve the production MP4 detection errors.
-Force Railway deployment trigger - Wed Jul  9 21:49:25 +07 2025
+DEPLOY TRIGGER - Force Railway redeploy with new filter chain
+Timestamp: 2025-01-15T10:45:00Z
+Filter: silenceremove + dual agate + volume=0.01 test
+Status: FORCE REDEPLOY REQUIRED

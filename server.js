@@ -266,12 +266,24 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
     console.log('🎬 [FFMPEG] Output path:', outputPath);
     console.log('🎬 [FFMPEG] Voice gain:', voiceGain, 'Track gain:', trackGain);
     
+    // 🔧 Optimized for size: 360p, moderate bitrate, web streaming ready
+    // 🎤 DUAL GATE FIX: Advanced dual noise gate system to prevent "horror film zooming" audio
     const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${file.path}" -i "${backingTrackPath}" \
-      -filter_complex "[0:a]aresample=async=1:first_pts=0,compand=attacks=0:points=-90/-90|-70/-20|-20/-5|0/0|20/0:soft-knee=6,equalizer=f=1800:width_type=h:width=200:g=3,dynaudnorm,highpass=f=300,volume=${voiceGain},agate=threshold=-30dB:ratio=2:attack=5:release=100[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
-      -map 1:v:0 -map "[a]" -c:v copy -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
+      -filter_complex "[0:a]silenceremove=start_periods=1:start_duration=0.1:start_threshold=-10dB,aresample=async=1:first_pts=0,highpass=f=100,agate=threshold=-55dB:ratio=25:attack=5:release=250,agate=threshold=-50dB:ratio=20:attack=5:release=250,equalizer=f=1800:width_type=h:width=200:g=3,equalizer=f=8000:width_type=h:width=1000:g=-2,volume=0.01[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
+      -map 1:v:0 -map "[a]" -vf scale=640:360 -b:v 800k -c:v libx264 -preset fast -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
       "${outputPath}"`;
 
-    console.log('🎬 [FFMPEG] Exact command:', ffmpegCmd);
+    console.log('🎤 [FFMPEG] SILENCE REMOVE + DUAL GATE FIX: THRESHOLD PROOF TEST');
+    console.log('🎤 [FFMPEG] - Silence remove: Chops audio until -10dB threshold crossed (🔥 EXTREME TEST - only shouting passes)');
+    console.log('🎤 [FFMPEG] - High-pass: 100Hz (removes breathing/low-end noise)');
+    console.log('🎤 [FFMPEG] - Gate 1: -55dB threshold, 25:1 ratio, 250ms release (aggressive noise cutting)');
+    console.log('🎤 [FFMPEG] - Gate 2: -50dB threshold, 20:1 ratio, 250ms release (secondary cleanup)');
+    console.log('🎤 [FFMPEG] - Gate timing: 5ms attack, 250ms release (longer, smoother transitions)');
+    console.log('🎤 [FFMPEG] - EQ: +3dB @ 1.8kHz (presence), -2dB @ 8kHz (reduce sibilance)');
+    console.log('🎤 [FFMPEG] - 🧪 VOLUME TEST: Set to 0.01 to verify filter chain is active');
+    console.log('🎤 [FFMPEG] - Filter order: silenceremove → aresample → highpass → gate → gate → EQ → volume');
+    console.log('🧪 [DEBUG] FFmpeg command:', ffmpegCmd);
+    console.log('🎬 [FFMPEG] 🔧 Optimizations: 360p (640x360), 800kbps video, fast preset');
     console.log('🎬 [FFMPEG] ⏱️  Execution starting...');
 
     try {
@@ -351,10 +363,11 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
       console.log('📹 [RESPONSE] Video saved to temp path:', videoTempPath);
 
       // Return JSON response with video reference instead of full data
+      const baseUrl = process.env.MERGE_PUBLIC_URL || 'http://localhost:3002';
       const jsonResponse = {
         success: true,
         videoUid,
-        videoUrl: `${process.env.RAILWAY_SERVICE_URL || 'http://localhost:3002'}/video/${videoUid}`,
+        videoUrl: `${baseUrl}/video/${videoUid}`,
         scoreResult,
         tokenId: 'temp-token-id'
       };
@@ -472,41 +485,60 @@ app.use(express.json());
 // 🔧 PRODUCTION FIX: Add video serving endpoint
 app.get('/video/:videoUid', (req, res) => {
   const { videoUid } = req.params;
-  const videoPath = `/tmp/response-${videoUid}.mp4`;
+  const filePath = `/tmp/response-${videoUid}.mp4`;
   
   console.log('📹 [VIDEO SERVE] Request for video:', videoUid);
-  console.log('📹 [VIDEO SERVE] Looking for file:', videoPath);
+  console.log('📹 [VIDEO SERVE] Looking for file:', filePath);
   
-  if (!fs.existsSync(videoPath)) {
-    console.error('📹 [VIDEO SERVE] ❌ Video file not found:', videoPath);
-    return res.status(404).json({ error: 'Video not found' });
+  // 🚨 CRITICAL FIX: Handle request abortion/cancellation
+  req.on('close', () => {
+    console.log('📹 [VIDEO SERVE] ⚠️  Request aborted by client for:', videoUid);
+  });
+  
+  req.on('error', (err) => {
+    console.error('📹 [VIDEO SERVE] ❌ Request error:', err);
+  });
+  
+  if (!fs.existsSync(filePath)) {
+    console.error('📹 [VIDEO SERVE] ❌ Video file not found:', filePath);
+    if (!res.headersSent) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+    return;
   }
   
-  try {
-    const videoData = fs.readFileSync(videoPath);
-    console.log('📹 [VIDEO SERVE] ✅ Serving video, size:', videoData.length, 'bytes');
-    
+  // Set headers before sending file
+  if (!res.headersSent) {
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Length', videoData.length);
     res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-    res.status(200).send(videoData);
-    
-    // Clean up file after serving (optional - could keep for caching)
-    setTimeout(() => {
-      try {
-        if (fs.existsSync(videoPath)) {
-          fs.unlinkSync(videoPath);
-          console.log('📹 [VIDEO SERVE] 🧹 Cleaned up video file:', videoPath);
-        }
-      } catch (cleanupError) {
-        console.warn('📹 [VIDEO SERVE] ⚠️  Cleanup failed:', cleanupError);
-      }
-    }, 60000); // Clean up after 1 minute
-    
-  } catch (error) {
-    console.error('📹 [VIDEO SERVE] ❌ Error serving video:', error);
-    res.status(500).json({ error: 'Failed to serve video' });
   }
+  
+  // Serve the file with proper error handling
+  res.sendFile(filePath, {}, (err) => {
+    if (err) {
+      console.error("❌ Error sending file:", err);
+      // 🚨 CRITICAL FIX: Check if headers already sent before responding
+      if (!res.headersSent) {
+        res.status(500).send("Failed to serve video");
+      } else {
+        console.error("🚨 [VIDEO SERVE] Cannot send error response - headers already sent");
+      }
+    } else {
+      console.log(`📹 [VIDEO SERVE] ✅ Served video file: ${filePath}`);
+      
+      // Delay cleanup by 10 minutes (600,000 ms)
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`🧹 [VIDEO SERVE] Cleaned up video file: ${filePath}`);
+          }
+        } catch (cleanupErr) {
+          console.error(`❌ [VIDEO SERVE] Cleanup failed for ${filePath}:`, cleanupErr);
+        }
+      }, 10 * 60 * 1000);
+    }
+  });
 });
 
 // Add a simple health check endpoint
@@ -515,5 +547,7 @@ app.get('/health', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Merge service running on port ${port}`);
+  console.log(`🚀 Merge service running on port ${port}`);
+  console.log(`🔄 DEPLOYMENT VERSION: 2025-01-15T10:45:00Z - silenceremove + dual agate + volume=0.01 test`);
+  console.log(`🧪 FILTER CHAIN: silenceremove(-10dB) → highpass(100Hz) → agate(-55dB,25:1) → agate(-50dB,20:1) → EQ → volume(0.01)`);
 }); 

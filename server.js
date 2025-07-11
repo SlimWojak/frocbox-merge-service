@@ -548,6 +548,7 @@ app.get('/health', (req, res) => {
 
 app.listen(port, () => {
   console.log(`🚀 Merge service running on port ${port}`);
-  console.log(`🔄 DEPLOYMENT VERSION: 2025-01-15T10:45:00Z - silenceremove + dual agate + volume=0.01 test`);
+  console.log(`🔄 DEPLOYMENT VERSION: 2025-01-15T10:55:00Z - FORCE REDEPLOY v1.0.1-silenceremove-test`);
   console.log(`🧪 FILTER CHAIN: silenceremove(-10dB) → highpass(100Hz) → agate(-55dB,25:1) → agate(-50dB,20:1) → EQ → volume(0.01)`);
+  console.log(`🚨 NEW FFmpeg COMMAND SHOULD CONTAIN: silenceremove + volume=0.01 + NO compand + NO dynaudnorm`);
 }); 

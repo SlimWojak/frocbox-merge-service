@@ -266,22 +266,27 @@ app.post('/merge', upload.single('recordedAudio'), async (req, res) => {
     console.log('🎬 [FFMPEG] Output path:', outputPath);
     console.log('🎬 [FFMPEG] Voice gain:', voiceGain, 'Track gain:', trackGain);
     
+    // 🔧 Production deployment logging
+    console.log("🔄 DEPLOYMENT VERSION: 2025-07-11 DYNAUDNORM MILD");
+    console.log("🧪 FFmpeg Chain: mild dynaudnorm for melodic warmth without zoom/swell");
+    
     // 🔧 Optimized for size: 360p, moderate bitrate, web streaming ready
-    // 🎤 DUAL GATE FIX: Advanced dual noise gate system to prevent "horror film zooming" audio
+    // 🎤 VOCAL CLARITY: Mild dynaudnorm for melodic warmth without zoom/swell effects
     const ffmpegCmd = `ffmpeg -y -ss 5.1 -i "${file.path}" -i "${backingTrackPath}" \
-      -filter_complex "[0:a]silenceremove=start_periods=1:start_duration=0.1:start_threshold=-10dB,aresample=async=1:first_pts=0,highpass=f=100,agate=threshold=-55dB:ratio=25:attack=5:release=250,agate=threshold=-50dB:ratio=20:attack=5:release=250,equalizer=f=1800:width_type=h:width=200:g=3,equalizer=f=8000:width_type=h:width=1000:g=-2,volume=0.01[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
+      -filter_complex "[0:a]aresample=async=1:first_pts=0,highpass=f=100,agate=threshold=-45dB:ratio=8:attack=5:release=200,equalizer=f=1800:width_type=h:width=200:g=3,equalizer=f=8000:width_type=h:width=1000:g=-2,dynaudnorm=framelen=200:gausssize=15:peak=0.95,volume=${voiceGain}[a0];[1:a]volume=${trackGain}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2[a]" \
       -map 1:v:0 -map "[a]" -vf scale=640:360 -b:v 800k -c:v libx264 -preset fast -c:a aac -b:a 192k -async 1 -shortest -movflags +faststart \
       "${outputPath}"`;
 
-    console.log('🎤 [FFMPEG] SILENCE REMOVE + DUAL GATE FIX: THRESHOLD PROOF TEST');
-    console.log('🎤 [FFMPEG] - Silence remove: Chops audio until -10dB threshold crossed (🔥 EXTREME TEST - only shouting passes)');
-    console.log('🎤 [FFMPEG] - High-pass: 100Hz (removes breathing/low-end noise)');
-    console.log('🎤 [FFMPEG] - Gate 1: -55dB threshold, 25:1 ratio, 250ms release (aggressive noise cutting)');
-    console.log('🎤 [FFMPEG] - Gate 2: -50dB threshold, 20:1 ratio, 250ms release (secondary cleanup)');
-    console.log('🎤 [FFMPEG] - Gate timing: 5ms attack, 250ms release (longer, smoother transitions)');
-    console.log('🎤 [FFMPEG] - EQ: +3dB @ 1.8kHz (presence), -2dB @ 8kHz (reduce sibilance)');
-    console.log('🎤 [FFMPEG] - 🧪 VOLUME TEST: Set to 0.01 to verify filter chain is active');
-    console.log('🎤 [FFMPEG] - Filter order: silenceremove → aresample → highpass → gate → gate → EQ → volume');
+    console.log("FFmpeg command:", ffmpegCmd);
+    console.log('🎤 [FFMPEG] VOCAL CLARITY: Mild dynaudnorm for melodic warmth without zoom/swell');
+    console.log('🎤 [FFMPEG] - NO silenceremove: Preserves natural intro timing');
+    console.log('🎤 [FFMPEG] - High-pass: 100Hz (crisp low-end cleanup)');
+    console.log('🎤 [FFMPEG] - Gate: -45dB threshold, 8:1 ratio, 200ms release (gentle noise cutting)');
+    console.log('🎤 [FFMPEG] - Gate timing: 5ms attack, 200ms release (smooth transitions)');
+    console.log('🎤 [FFMPEG] - EQ: +3dB @ 1.8kHz (vocal presence), -2dB @ 8kHz (reduce sibilance)');
+    console.log('🎤 [FFMPEG] - dynaudnorm: framelen=200, gausssize=15, peak=0.95 (mild vocal lift)');
+    console.log('🎤 [FFMPEG] - Volume: ${voiceGain} gain (user-controlled)');
+    console.log('🎤 [FFMPEG] - Filter order: aresample → highpass → gate → EQ → dynaudnorm → volume');
     console.log('🧪 [DEBUG] FFmpeg command:', ffmpegCmd);
     console.log('🎬 [FFMPEG] 🔧 Optimizations: 360p (640x360), 800kbps video, fast preset');
     console.log('🎬 [FFMPEG] ⏱️  Execution starting...');
